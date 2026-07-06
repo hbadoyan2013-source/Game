@@ -53,7 +53,7 @@ let state='menu',score=0,hi=0,lives=3,wave=1,gameMode='solo';
 let ship,bullets,enemyBullets,asteroids,ufos,particles,bots,botBullets,frameId,ufoTimer,cam;
 const keys={};
 
-// ---- Gamepad (PS controller etc) support ----
+
 let gamepadIndex=null,gpThrusting=false,gpShooting=false;
 window.addEventListener('gamepadconnected',e=>{
   gamepadIndex=e.gamepad.index;
@@ -77,13 +77,12 @@ function pollGamepad(){
   const lx=gp.axes[0]||0, ly=gp.axes[1]||0;
   const mag=Math.hypot(lx,ly);
 
-  // D-pad as classic relative rotate+thrust alternative
   const dpadLeft=gp.buttons[14]&&gp.buttons[14].pressed;
   const dpadRight=gp.buttons[15]&&gp.buttons[15].pressed;
   const dpadUp=gp.buttons[12]&&gp.buttons[12].pressed;
 
   if(mag>dead){
-    // Left stick: point ship toward stick direction and thrust proportional to how far it's pushed
+    
     const targetAngle=Math.atan2(ly,lx);
     let da=targetAngle-ship.angle;
     while(da>Math.PI)da-=Math.PI*2;
@@ -102,10 +101,10 @@ function pollGamepad(){
     gpThrusting=false;
   }
 
-  // Shoot: R2(7), X/Cross(0), R1(5), Square(2)
+  
   gpShooting=!!((gp.buttons[7]&&gp.buttons[7].pressed)||(gp.buttons[0]&&gp.buttons[0].pressed)||(gp.buttons[5]&&gp.buttons[5].pressed)||(gp.buttons[2]&&gp.buttons[2].pressed));
 }
-// ---- end gamepad support ----
+
 
 const SKINS=[
   {id:'green',  hull:'#0f8', flame:'#f80'},
