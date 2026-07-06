@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:monospace;color:#fff;}
+canvas{display:block;}
+#wrap{position:relative;width:700px;height:540px;overflow:hidden;}
+#ui{position:absolute;top:0;left:0;width:100%;display:flex;justify-content:space-between;align-items:center;padding:8px 14px;pointer-events:none;font-size:13px;background:linear-gradient(#000a,transparent);}
+#planets-bar{display:flex;gap:5px;}
+.picon{width:13px;height:13px;border-radius:50%;border:1.5px solid #555;display:inline-block;}
+#gp-status{position:absolute;top:34px;right:14px;font-size:11px;color:#0f8;background:rgba(0,0,0,0.5);padding:3px 8px;border-radius:4px;display:none;}
+#overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.9);overflow-y:auto;padding:20px;}
+#overlay h1{font-size:28px;letter-spacing:3px;color:#0ff;margin-bottom:6px;}
+#overlay h2{font-size:14px;color:#0f8;margin:6px 0;}
+#overlay .sub{font-size:12px;color:#aaa;margin:3px 0;text-align:center;}
+#overlay .hi{color:#ff0;font-size:13px;margin:8px 0;}
+.mode-btns{display:flex;gap:14px;margin-top:14px;}
+.mbtn{background:transparent;border:1px solid #0ff;color:#0ff;padding:11px 18px;font-family:monospace;font-size:12px;cursor:pointer;letter-spacing:1px;line-height:1.4;}
+.mbtn:hover{background:#0ff2;}
+.mbtn span{display:block;font-size:9px;color:#8ff;margin-top:3px;}
+#skin-row{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap;justify-content:center;}
+.skin{width:54px;height:54px;border:2px solid #444;background:#111;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;}
+.skin.sel{border-color:#0ff;box-shadow:0 0 8px #0ff8;}
+.skin svg{width:30px;height:30px;}
+#mission-banner{position:absolute;top:36px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);border:1px solid #0f8;color:#0f8;padding:5px 14px;font-size:12px;border-radius:4px;display:none;white-space:nowrap;}
+</style>
+<div id="wrap">
+  <canvas id="c" width="700" height="540"></canvas>
+  <div id="ui">
+    <span id="score">Score: 0</span>
+    <div id="planets-bar"></div>
+    <span id="lives">★★★</span>
+  </div>
+  <div id="gp-status">🎮 Джойстик подключен</div>
+  <div id="mission-banner"></div>
+  <div id="overlay">
+    <h1>🚀 VACCINE RUN</h1>
+    <p class="sub">Стрелять — Space / R2 / X | Двигаться — WASD / стрелки / левый стик</p>
+    <p class="sub">У каждой планеты своя волна врагов — уничтожь их, потом вакцинируй!</p>
+    <div class="hi" id="hi-display">Рекорд: 0</div>
+    <h2>ВЫБЕРИ СКИН КОРАБЛЯ</h2>
+    <div id="skin-row"></div>
+    <div class="mode-btns">
+      <button class="mbtn" id="btn-solo">🚀 ОДИНОЧНАЯ<span>7 планет, 7 миссий</span></button>
+      <button class="mbtn" id="btn-team">👾 КОМАНДА vs НЛО<span>Ты + боты уничтожают волны</span></button>
+    </div>
+  </div>
+</div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const SW=700,SH=540,MW=6000,MH=6000;
+let state='menu',score=0,hi=0,lives=3,wave=1,gameMode='solo';
+let ship,bullets,enemyBullets,asteroids,ufos,particles,bots,botBullets,frameId,ufoTimer,cam;
+const keys={};
+
+// ---- Gamepad (PS controller etc) support ----
+let gamepadIndex=null,gpThrusting=false,gpShooting=false;
+window.addEventListener('gamepadconnected',e=>{
+  gamepadIndex=e.gamepad.index;
+  document.getElementById('gp-status').style.display='block';
+});
+window.addEventListener('gamepaddisconnected',e=>{
+  if(gamepadIndex===e.gamepad.index){gamepadIndex=null;gpThrusting=false;gpShooting=false;}
+  document.getElementById('gp-status').style.display='none';
+});
+
+function pollGamepad(){
+  const pads=navigator.getGamepads?navigator.getGamepads():[];
+  let gp=gamepadIndex!==null?pads[gamepadIndex]:null;
+  if(!gp){
+    for(const p of pads){if(p){gp=p;gamepadIndex=p.index;break;}}
+  }
+  if(!gp){gpThrusting=false;gpShooting=false;return;}
+  document.getElementById('gp-status').style.display='block';
+
+  const dead=0.2;
+  const lx=gp.axes[0]||0, ly=gp.axes[1]||0;
+  const mag=Math.hypot(lx,ly);
+
+  // D-pad as classic relative rotate+thrust alternative
+  const dpadLeft=gp.buttons[14]&&gp.buttons[14].pressed;
+  const dpadRight=gp.buttons[15]&&gp.buttons[15].pressed;
+  const dpadUp=gp.buttons[12]&&gp.buttons[12].pressed;
+
+  if(mag>dead){
+    // Left stick: point ship toward stick direction and thrust proportional to how far it's pushed
+    const targetAngle=Math.atan2(ly,lx);
+    let da=targetAngle-ship.angle;
+    while(da>Math.PI)da-=Math.PI*2;
+    while(da<-Math.PI)da+=Math.PI*2;
+    ship.angle+=da*0.15;
+    const thrust=Math.min((mag-dead)/(1-dead),1);
+    ship.vx+=Math.cos(ship.angle)*0.25*thrust;
+    ship.vy+=Math.sin(ship.angle)*0.25*thrust;
+    gpThrusting=true;
+  } else if(dpadLeft||dpadRight||dpadUp){
+    if(dpadLeft)ship.angle-=0.06;
+    if(dpadRight)ship.angle+=0.06;
+    if(dpadUp){ship.vx+=Math.cos(ship.angle)*0.25;ship.vy+=Math.sin(ship.angle)*0.25;gpThrusting=true;}
+    else gpThrusting=false;
+  } else {
+    gpThrusting=false;
+  }
+
+  // Shoot: R2(7), X/Cross(0), R1(5), Square(2)
+  gpShooting=!!((gp.buttons[7]&&gp.buttons[7].pressed)||(gp.buttons[0]&&gp.buttons[0].pressed)||(gp.buttons[5]&&gp.buttons[5].pressed)||(gp.buttons[2]&&gp.buttons[2].pressed));
+}
+// ---- end gamepad support ----
+
+const SKINS=[
+  {id:'green',  hull:'#0f8', flame:'#f80'},
+  {id:'cyan',   hull:'#0ff', flame:'#f0a'},
+  {id:'red',    hull:'#f44', flame:'#ff0'},
+  {id:'purple', hull:'#a0f', flame:'#0ff'},
+  {id:'gold',   hull:'#fd0', flame:'#f60'},
+];
+let selectedSkin=SKINS[0];
+
+const PLANET_DATA=[
+  {name:'Zephyra', color:'#70c8ff', r:22, missionType:'asteroids', target:35, waves:3},
+  {name:'Kronos',  color:'#d4a030', r:38, missionType:'ufos',      target:18, waves:3},
+  {name:'Veltara', color:'#e05050', r:26, missionType:'asteroids', target:45, waves:4},
+  {name:'Draxis',  color:'#9060d0', r:18, missionType:'ufos',      target:24, waves:4},
+  {name:'Solenne', color:'#ffe080', r:32, missionType:'mixed',     target:55, waves:4},
+  {name:'Umbrion', color:'#408890', r:20, missionType:'ufos',      target:30, waves:5},
+  {name:'Caelyx',  color:'#80ff90', r:28, missionType:'mixed',     target:70, waves:5},
+];
+let planets=[];
+let activeMission=null;
+
+const STARS=[];
+for(let i=0;i<350;i++) STARS.push({x:Math.random()*MW,y:Math.random()*MH,s:Math.random()<0.05?2:1,a:0.1+Math.random()*0.25});
+
+document.addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='Space')e.preventDefault();});
+document.addEventListener('keyup',e=>keys[e.code]=false);
+document.getElementById('btn-solo').addEventListener('click',()=>startGame('solo'));
+document.getElementById('btn-team').addEventListener('click',()=>startGame('team'));
+
+function renderSkins(){
+  const row=document.getElementById('skin-row');
+  row.innerHTML='';
+  SKINS.forEach(sk=>{
+    const div=document.createElement('div');
+    div.className='skin'+(sk.id===selectedSkin.id?' sel':'');
+    div.innerHTML=`<svg viewBox="0 0 30 30"><polygon points="24,15 6,21 11,15 6,9" fill="none" stroke="${sk.hull}" stroke-width="2"/></svg>`;
+    div.addEventListener('click',()=>{selectedSkin=sk;renderSkins();});
+    row.appendChild(div);
+  });
+}
+renderSkins();
+
+function startGame(mode){
+  gameMode=mode;
+  document.getElementById('overlay').style.display='none';
+  score=0;lives=3;wave=1;ufoTimer=0;activeMission=null;
+  ship={x:MW/2,y:MW/2,angle:-Math.PI/2,vx:0,vy:0,invincible:0,shootCd:0};
+  cam={x:MW/2-SW/2,y:MH/2-SH/2};
+  bullets=[];enemyBullets=[];asteroids=[];ufos=[];particles=[];botBullets=[];bots=[];
+  if(mode==='solo'){
+    placePlanets();
+    spawnRoamingAsteroids();
+  } else {
+    planets=[];
+    spawnUfoWave();
+    bots=[
+      {x:MW/2-120,y:MW/2+60,angle:0,vx:0,vy:0,shootCd:0,hp:3,color:'#f80'},
+      {x:MW/2+120,y:MW/2+60,angle:Math.PI,vx:0,vy:0,shootCd:0,hp:3,color:'#a0f'},
+    ];
+  }
+  updateUI();
+  state='playing';
+  if(frameId)cancelAnimationFrame(frameId);
+  loop();
+}
+
+function placePlanets(){
+  planets=[];
+  const spots=[[800,800],[MW-800,900],[MW/2,1100],[800,MH-800],[MW-800,MH-800],[MW/2,MH-1200],[MW/2,MH/2+1400]];
+  for(let i=0;i<7;i++){
+    const[x,y]=spots[i];
+    planets.push({...PLANET_DATA[i],x,y,vaccinated:false,pulse:0,missionDone:false,missionStarted:false});
+  }
+}
+
+function spawnRoamingAsteroids(){
+  for(let i=0;i<8;i++){
+    let x,y;
+    do{x=Math.random()*MW;y=Math.random()*MH;}while(Math.hypot(x-ship.x,y-ship.y)<300);
+    spawnAsteroid(x,y,3,false);
+  }
+}
+
+function spawnAsteroid(x,y,size,tagged){
+  const spd=(0.5+Math.random()*0.8)*(1+wave*0.05);
+  const a=Math.random()*Math.PI*2;
+  const pts=[];const n=8+Math.floor(Math.random()*5);
+  for(let i=0;i<n;i++){const ang=(i/n)*Math.PI*2;const r=size*14+Math.random()*size*6;pts.push({x:Math.cos(ang)*r,y:Math.sin(ang)*r});}
+  asteroids.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,size,pts,rot:Math.random()*Math.PI*2,rotSpd:(Math.random()-0.5)*0.04,missionTagged:!!tagged});
+}
+
+function spawnUfoWave(){
+  const count=3+wave*2;
+  for(let i=0;i<count;i++) setTimeout(()=>spawnUfo(null,false),i*800);
+}
+
+function spawnUfo(nearXY,tagged){
+  if(state!=='playing')return;
+  const big=wave<2||Math.random()<0.35;
+  let x,y;
+  if(nearXY){
+    const a=Math.random()*Math.PI*2;
+    x=nearXY.x+Math.cos(a)*320;y=nearXY.y+Math.sin(a)*320;
+  } else {
+    const side=Math.floor(Math.random()*4);
+    if(side===0){x=ship.x+Math.random()*1000-500;y=ship.y-600;}
+    else if(side===1){x=ship.x+Math.random()*1000-500;y=ship.y+600;}
+    else if(side===2){x=ship.x-600;y=ship.y+Math.random()*1000-500;}
+    else{x=ship.x+600;y=ship.y+Math.random()*1000-500;}
+  }
+  x=Math.max(50,Math.min(MW-50,x));y=Math.max(50,Math.min(MH-50,y));
+  const a2=Math.atan2(ship.y-y,ship.x-x);
+  const spd=1.2+Math.random()*0.8+wave*0.08;
+  ufos.push({x,y,vx:Math.cos(a2)*spd,vy:Math.sin(a2)*spd,big,r:big?22:13,shootCd:big?100:60,wobbleT:Math.random()*10,hp:big?3:1,angle:a2,missionTagged:!!tagged});
+}
+
+function startMission(p){
+  p.missionStarted=true;
+  const perWave=Math.ceil(p.target/p.waves);
+  activeMission={planet:p,killed:0,target:p.target,waves:p.waves,waveNum:1,perWave};
+  showMissionBanner(`💉 ${p.name}: Волна 1/${p.waves} — уничтожь врагов (0/${perWave})`);
+  spawnMissionWave(p,perWave);
+}
+
+function spawnMissionWave(p,count){
+  const n=p.missionType==='ufos'?0:count;
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,d=180+Math.random()*260;
+    spawnAsteroid(p.x+Math.cos(a)*d,p.y+Math.sin(a)*d,2+(Math.random()<0.3?1:0),true);
+  }
+  if(p.missionType==='ufos'||p.missionType==='mixed'){
+    const ucount=p.missionType==='ufos'?count:Math.ceil(count/2);
+    for(let i=0;i<ucount;i++) setTimeout(()=>spawnUfo(p,true),i*650);
+  }
+}
+
+function showMissionBanner(text){
+  const b=document.getElementById('mission-banner');
+  b.textContent=text;b.style.display='block';
+}
+function hideMissionBanner(){document.getElementById('mission-banner').style.display='none';}
+
+function checkMissionKill(){
+  if(!activeMission)return;
+  const p=activeMission.planet;
+  if(activeMission.killed>=activeMission.perWave){
+    if(activeMission.waveNum>=activeMission.waves){
+      p.missionDone=true;hideMissionBanner();activeMission=null;return;
+    }
+    activeMission.waveNum++;activeMission.killed=0;
+    showMissionBanner(`💉 ${p.name}: Волна ${activeMission.waveNum}/${activeMission.waves} — уничтожь врагов (0/${activeMission.perWave})`);
+    spawnMissionWave(p,activeMission.perWave);return;
+  }
+  showMissionBanner(`💉 ${p.name}: Волна ${activeMission.waveNum}/${activeMission.waves} — уничтожь врагов (${activeMission.killed}/${activeMission.perWave})`);
+}
+
+function loop(){update();draw();if(state==='playing')frameId=requestAnimationFrame(loop);}
+
+function updateCam(){
+  cam.x=ship.x-SW/2;cam.y=ship.y-SH/2;
+  cam.x=Math.max(0,Math.min(MW-SW,cam.x));cam.y=Math.max(0,Math.min(MH-SH,cam.y));
+}
+
+function updateBots(){
+  bots.forEach(bot=>{
+    if(bot.hp<=0)return;
+    let nearest=null,nd=Infinity;
+    ufos.forEach(u=>{const d=Math.hypot(u.x-bot.x,u.y-bot.y);if(d<nd){nd=d;nearest=u;}});
+    if(nearest){
+      const ta=Math.atan2(nearest.y-bot.y,nearest.x-bot.x);
+      let da=ta-bot.angle;while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
+      bot.angle+=da*0.06;
+      bot.vx+=Math.cos(bot.angle)*0.15;bot.vy+=Math.sin(bot.angle)*0.15;
+      const v=Math.hypot(bot.vx,bot.vy);if(v>3.5){bot.vx=bot.vx/v*3.5;bot.vy=bot.vy/v*3.5;}
+      if(nd<350&&bot.shootCd<=0){
+        botBullets.push({x:bot.x+Math.cos(bot.angle)*14,y:bot.y+Math.sin(bot.angle)*14,vx:Math.cos(bot.angle)*8,vy:Math.sin(bot.angle)*8,life:80});
+        bot.shootCd=20;
+      }
+    }
+    bot.vx*=0.985;bot.vy*=0.985;
+    bot.x=(bot.x+bot.vx+MW)%MW;bot.y=(bot.y+bot.vy+MH)%MH;
+    if(bot.shootCd>0)bot.shootCd--;
+  });
+  botBullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;b.life--;});
+  botBullets=botBullets.filter(b=>b.life>0);
+  for(let bi=botBullets.length-1;bi>=0;bi--){
+    for(let ui=ufos.length-1;ui>=0;ui--){
+      const u=ufos[ui],b=botBullets[bi];
+      if(Math.hypot(u.x-b.x,u.y-b.y)<u.r+3){
+        u.hp--;botBullets.splice(bi,1);
+        if(u.hp<=0){score+=(u.big?150:300)*wave;explode(u.x,u.y,2,'#f0f');ufos.splice(ui,1);}
+        else explode(u.x,u.y,1,'#f0f');
+        break;
+      }
+    }
+  }
+}
+
+function update(){
+  pollGamepad();
+  if(keys['ArrowLeft']||keys['KeyA'])ship.angle-=0.06;
+  if(keys['ArrowRight']||keys['KeyD'])ship.angle+=0.06;
+  if(keys['ArrowUp']||keys['KeyW']){ship.vx+=Math.cos(ship.angle)*0.25;ship.vy+=Math.sin(ship.angle)*0.25;}
+  const v=Math.hypot(ship.vx,ship.vy);
+  if(v>5.5){ship.vx=ship.vx/v*5.5;ship.vy=ship.vy/v*5.5;}
+  ship.vx*=0.983;ship.vy*=0.983;
+  ship.x=(ship.x+ship.vx+MW)%MW;ship.y=(ship.y+ship.vy+MH)%MH;
+  if(ship.invincible>0)ship.invincible--;
+  if(ship.shootCd>0)ship.shootCd--;
+  if((keys['Space']||gpShooting)&&ship.shootCd<=0){
+    bullets.push({x:ship.x+Math.cos(ship.angle)*15,y:ship.y+Math.sin(ship.angle)*15,vx:Math.cos(ship.angle)*9+ship.vx*0.3,vy:Math.sin(ship.angle)*9+ship.vy*0.3,life:80});
+    ship.shootCd=12;
+  }
+  updateCam();
+  if(gameMode==='team')updateBots();
+
+  if(gameMode==='solo'){
+    planets.forEach(p=>{
+      if(!p.vaccinated&&!p.missionStarted&&!activeMission&&Math.hypot(p.x-ship.x,p.y-ship.y)<320) startMission(p);
+      if(!p.vaccinated&&p.missionDone&&Math.hypot(p.x-ship.x,p.y-ship.y)<p.r+20){
+        p.vaccinated=true;p.pulse=50;score+=400*wave;explode(p.x,p.y,3,'#0f8');
+      }
+      if(p.pulse>0)p.pulse--;
+    });
+  }
+
+  if(gameMode==='solo'){ufoTimer++;if(ufoTimer>=700){spawnUfo(null,false);ufoTimer=0;}}
+
+  ufos.forEach(u=>{
+    u.wobbleT+=0.035;
+    const ta=Math.atan2(ship.y-u.y,ship.x-u.x);
+    let da=ta-u.angle;while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
+    u.angle+=da*0.018;
+    const spd=Math.hypot(u.vx,u.vy)||1;
+    u.vx=Math.cos(u.angle)*spd;u.vy=Math.sin(u.angle)*spd;
+    u.x+=u.vx+Math.cos(u.wobbleT+Math.PI/2)*(u.big?0.6:1.2);
+    u.y+=u.vy+Math.sin(u.wobbleT)*(u.big?0.6:1.2);
+    u.shootCd--;
+    if(u.shootCd<=0){
+      const a=Math.atan2(ship.y-u.y,ship.x-u.x)+(Math.random()-0.5)*(u.big?0.25:0.12);
+      enemyBullets.push({x:u.x,y:u.y,vx:Math.cos(a)*(4+wave*0.15),vy:Math.sin(a)*(4+wave*0.15),life:90,big:u.big});
+      u.shootCd=u.big?100:58;
+    }
+  });
+
+  bullets.forEach(b=>{b.x=(b.x+b.vx+MW)%MW;b.y=(b.y+b.vy+MH)%MH;b.life--;});
+  bullets=bullets.filter(b=>b.life>0);
+  enemyBullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;b.life--;});
+  enemyBullets=enemyBullets.filter(b=>b.life>0);
+  asteroids.forEach(a=>{a.x=(a.x+a.vx+MW)%MW;a.y=(a.y+a.vy+MH)%MH;a.rot+=a.rotSpd;});
+  particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.life--;p.vx*=0.96;p.vy*=0.96;});
+  particles=particles.filter(p=>p.life>0);
+
+  for(let bi=bullets.length-1;bi>=0;bi--){
+    for(let ai=asteroids.length-1;ai>=0;ai--){
+      const a=asteroids[ai],b=bullets[bi];
+      if(Math.hypot(a.x-b.x,a.y-b.y)<a.size*14){
+        score+=[75,50,25][a.size-1]*wave;explode(a.x,a.y,a.size,'#8af');
+        if(a.size>1){spawnAsteroid(a.x,a.y,a.size-1,a.missionTagged);spawnAsteroid(a.x,a.y,a.size-1,a.missionTagged);}
+        else if(a.missionTagged&&activeMission){activeMission.killed++;checkMissionKill();}
+        asteroids.splice(ai,1);bullets.splice(bi,1);break;
+      }
+    }
+  }
+  for(let bi=bullets.length-1;bi>=0;bi--){
+    for(let ui=ufos.length-1;ui>=0;ui--){
+      const u=ufos[ui],b=bullets[bi];
+      if(Math.hypot(u.x-b.x,u.y-b.y)<u.r+3){
+        u.hp--;bullets.splice(bi,1);
+        if(u.hp<=0){
+          score+=(u.big?200:500)*wave;explode(u.x,u.y,2,'#f0f');
+          if(u.missionTagged&&activeMission){activeMission.killed++;checkMissionKill();}
+          ufos.splice(ui,1);
+        } else explode(u.x,u.y,1,'#f0f');
+        break;
+      }
+    }
+  }
+  if(ship.invincible<=0){
+    for(let bi=enemyBullets.length-1;bi>=0;bi--){
+      const b=enemyBullets[bi];
+      if(Math.hypot(b.x-ship.x,b.y-ship.y)<11){
+        lives--;explode(ship.x,ship.y,2,'#f80');
+        ship.invincible=180;ship.vx=0;ship.vy=0;
+        enemyBullets.splice(bi,1);
+        if(lives<=0){setTimeout(gameOver,300);state='dead';}break;
+      }
+    }
+  }
+  if(ship.invincible<=0){
+    for(let ai=asteroids.length-1;ai>=0;ai--){
+      const a=asteroids[ai];
+      if(Math.hypot(a.x-ship.x,a.y-ship.y)<a.size*14-2){
+        lives--;explode(ship.x,ship.y,2,'#f80');
+        ship.invincible=180;ship.vx=0;ship.vy=0;
+        if(lives<=0){setTimeout(gameOver,300);state='dead';}break;
+      }
+    }
+  }
+
+  if(gameMode==='solo'&&planets.every(p=>p.vaccinated)&&state==='playing'){setTimeout(winScreen,400);state='won';}
+  if(gameMode==='team'&&ufos.length===0&&state==='playing'){wave++;setTimeout(spawnUfoWave,1200);}
+
+  updateUI();
+}
+
+function explode(x,y,size,color){
+  for(let i=0;i<size*7;i++){
+    const a=Math.random()*Math.PI*2,spd=Math.random()*3+0.5;
+    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:30+Math.random()*22,color:color||'#f80'});
+  }
+}
+
+function ws(wx,wy){return{x:wx-cam.x,y:wy-cam.y};}
+function inView(wx,wy,r=40){const s=ws(wx,wy);return s.x>-r&&s.x<SW+r&&s.y>-r&&s.y<SH+r;}
+
+function drawPlanet(p){
+  if(!inView(p.x,p.y,p.r+60))return;
+  const s=ws(p.x,p.y);
+  ctx.save();ctx.translate(s.x,s.y);
+  if(p.vaccinated){ctx.shadowColor='#0f8';ctx.shadowBlur=16+(p.pulse>0?p.pulse*0.7:0);}
+  else if(p.missionStarted&&!p.missionDone){ctx.shadowColor='#f40';ctx.shadowBlur=10;}
+  if(p.name==='Kronos'||p.name==='Solenne'){
+    ctx.strokeStyle=p.name==='Kronos'?'#b89030':'#e0c060';ctx.lineWidth=3;
+    ctx.beginPath();ctx.ellipse(0,0,p.r+18,6,-0.25,0,Math.PI*2);ctx.stroke();
+  }
+  ctx.beginPath();ctx.arc(0,0,p.r,0,Math.PI*2);
+  ctx.fillStyle=p.vaccinated?'#0f8':p.color;ctx.fill();
+  ctx.beginPath();ctx.arc(-p.r*0.28,-p.r*0.28,p.r*0.38,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.11)';ctx.fill();
+  if(p.vaccinated){
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(p.r*0.85)}px monospace`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✓',0,1);
+  } else if(p.missionStarted&&!p.missionDone){
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(p.r*0.7)}px monospace`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('⚔',0,1);
+  }
+  ctx.shadowBlur=0;
+  ctx.fillStyle=p.vaccinated?'#0f8':'#bbb';ctx.font='11px monospace';
+  ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(p.name,0,p.r+5);
+  ctx.restore();
+}
+
+function draw(){
+  ctx.fillStyle='#000';ctx.fillRect(0,0,SW,SH);
+  STARS.forEach(st=>{
+    const sx=((st.x-cam.x*0.3+MW)%MW),sy=((st.y-cam.y*0.3+MH)%MH);
+    if(sx<SW&&sy<SH){ctx.globalAlpha=st.a;ctx.fillStyle='#fff';ctx.fillRect(sx,sy,st.s,st.s);}
+  });
+  ctx.globalAlpha=1;
+
+  if(gameMode==='solo'){
+    const mm={x:SW-95,y:SH-72,w:84,h:62};
+    ctx.fillStyle='rgba(0,0,0,0.65)';ctx.fillRect(mm.x,mm.y,mm.w,mm.h);
+    ctx.strokeStyle='#333';ctx.strokeRect(mm.x,mm.y,mm.w,mm.h);
+    planets.forEach(p=>{
+      const mx=mm.x+p.x/MW*mm.w,my=mm.y+p.y/MH*mm.h;
+      ctx.fillStyle=p.vaccinated?'#0f8':p.color;
+      ctx.beginPath();ctx.arc(mx,my,2.5,0,Math.PI*2);ctx.fill();
+    });
+    ctx.fillStyle='#0ff';
+    ctx.beginPath();ctx.arc(mm.x+ship.x/MW*mm.w,mm.y+ship.y/MH*mm.h,2,0,Math.PI*2);ctx.fill();
+  }
+
+  planets.forEach(drawPlanet);
+
+  asteroids.forEach(a=>{
+    if(!inView(a.x,a.y,a.size*20))return;
+    const s=ws(a.x,a.y);
+    ctx.save();ctx.translate(s.x,s.y);ctx.rotate(a.rot);
+    ctx.strokeStyle=a.missionTagged?'#fa4':'#8af';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(a.pts[0].x,a.pts[0].y);
+    a.pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();ctx.stroke();
+    ctx.restore();
+  });
+
+  ufos.forEach(u=>{
+    if(!inView(u.x,u.y))return;
+    const s=ws(u.x,u.y);
+    ctx.save();ctx.translate(s.x,s.y);
+    ctx.strokeStyle=u.missionTagged?'#fa0':(u.big?'#f0f':'#f8f');ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.ellipse(0,0,u.r,u.r*0.38,0,0,Math.PI*2);ctx.stroke();
+    ctx.beginPath();ctx.ellipse(0,-u.r*0.22,u.r*0.48,u.r*0.38,0,Math.PI,0);ctx.stroke();
+    ctx.fillStyle=u.big?'#f0f4':'#f8f3';
+    ctx.beginPath();ctx.ellipse(0,0,u.r*0.3,u.r*0.12,0,0,Math.PI*2);ctx.fill();
+    if(u.big){ctx.fillStyle='#333';ctx.fillRect(-u.r,-u.r-8,u.r*2,4);ctx.fillStyle='#f0f';ctx.fillRect(-u.r,-u.r-8,u.r*2*(u.hp/3),4);}
+    ctx.restore();
+  });
+
+  bots.forEach(bot=>{
+    if(bot.hp<=0||!inView(bot.x,bot.y))return;
+    const s=ws(bot.x,bot.y);
+    ctx.save();ctx.translate(s.x,s.y);ctx.rotate(bot.angle);
+    ctx.strokeStyle=bot.color;ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(13,0);ctx.lineTo(-9,7);ctx.lineTo(-5,0);ctx.lineTo(-9,-7);ctx.closePath();ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle=bot.color;ctx.font='9px monospace';ctx.textAlign='center';
+    ctx.fillText('BOT',s.x,s.y+18);
+  });
+  botBullets.forEach(b=>{if(!inView(b.x,b.y))return;const s=ws(b.x,b.y);ctx.fillStyle='#fa0';ctx.beginPath();ctx.arc(s.x,s.y,2,0,Math.PI*2);ctx.fill();});
+  enemyBullets.forEach(b=>{if(!inView(b.x,b.y))return;const s=ws(b.x,b.y);ctx.fillStyle=b.big?'#f66':'#f9a';ctx.beginPath();ctx.arc(s.x,s.y,b.big?3:2,0,Math.PI*2);ctx.fill();});
+  bullets.forEach(b=>{if(!inView(b.x,b.y))return;const s=ws(b.x,b.y);ctx.fillStyle='#0ff';ctx.beginPath();ctx.arc(s.x,s.y,2.5,0,Math.PI*2);ctx.fill();});
+  particles.forEach(p=>{if(!inView(p.x,p.y))return;const s=ws(p.x,p.y);ctx.globalAlpha=p.life/50;ctx.fillStyle=p.color;ctx.fillRect(s.x-1,s.y-1,3,3);});
+  ctx.globalAlpha=1;
+
+  if(state==='playing'&&(ship.invincible===0||Math.floor(ship.invincible/8)%2===0)){
+    const s=ws(ship.x,ship.y);
+    ctx.save();ctx.translate(s.x,s.y);ctx.rotate(ship.angle);
+    ctx.strokeStyle=selectedSkin.hull;ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(14,0);ctx.lineTo(-10,8);ctx.lineTo(-6,0);ctx.lineTo(-10,-8);ctx.closePath();ctx.stroke();
+    if(keys['ArrowUp']||keys['KeyW']||gpThrusting){
+      ctx.strokeStyle=selectedSkin.flame;ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(-6,3);ctx.lineTo(-13,0);ctx.lineTo(-6,-3);ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if(gameMode==='team'){
+    ctx.fillStyle='rgba(0,255,200,0.12)';ctx.fillRect(0,SH-28,SW,28);
+    ctx.fillStyle='#0fc';ctx.font='12px monospace';ctx.textAlign='center';
+    ctx.fillText(`ВОЛНА ${wave} — СЧЁТ: ${score}`,SW/2,SH-10);
+  }
+}
+
+function updateUI(){
+  document.getElementById('score').textContent='Score: '+score;
+  document.getElementById('lives').textContent='★'.repeat(Math.max(0,lives))+'☆'.repeat(Math.max(0,3-lives));
+  const bar=document.getElementById('planets-bar');
+  if(gameMode==='solo'){
+    bar.innerHTML=planets.map(p=>`<span class="picon" title="${p.name}" style="background:${p.vaccinated?'#0f8':p.color};border-color:${p.vaccinated?'#0f8':(p.missionStarted&&!p.missionDone?'#f40':'#555')}"></span>`).join('');
+  } else {
+    bar.innerHTML=`<span style="color:#f0f">👾 КОМАНДА vs НЛО — Волна ${wave}</span>`;
+  }
+}
+
+function showOverlay(html){
+  const ov=document.getElementById('overlay');
+  ov.style.display='flex';ov.innerHTML=html;
+  document.getElementById('startBtn').addEventListener('click',()=>startGame(gameMode));
+  document.getElementById('menuBtn')?.addEventListener('click',backToMenu);
+}
+
+function backToMenu(){
+  state='menu';hideMissionBanner();
+  const ov=document.getElementById('overlay');
+  ov.innerHTML=`<h1>🚀 VACCINE RUN</h1><p class="sub">Стрелять — Space / R2 / X | Двигаться — WASD / стрелки / левый стик</p><p class="sub">У каждой планеты своя волна врагов — уничтожь их, потом вакцинируй!</p><div class="hi">Рекорд: ${hi}</div><h2>ВЫБЕРИ СКИН КОРАБЛЯ</h2><div id="skin-row"></div><div class="mode-btns"><button class="mbtn" id="btn-solo">🚀 ОДИНОЧНАЯ<span>7 планет, 7 миссий</span></button><button class="mbtn" id="btn-team">👾 КОМАНДА vs НЛО<span>Ты + боты уничтожают волны</span></button></div>`;
+  renderSkins();
+  document.getElementById('btn-solo').addEventListener('click',()=>startGame('solo'));
+  document.getElementById('btn-team').addEventListener('click',()=>startGame('team'));
+}
+
+function winScreen(){
+  if(score>hi)hi=score;hideMissionBanner();
+  showOverlay(`<h1>🎉 МИССИЯ ВЫПОЛНЕНА!</h1><h2 style="color:#0f8;margin-top:8px">Все 7 планет вакцинированы!</h2><p style="color:#ff0;font-size:17px;margin-top:10px">Счёт: ${score}</p><div class="hi">Рекорд: ${hi}</div><div class="mode-btns"><button class="mbtn" id="startBtn">ИГРАТЬ СНОВА</button><button class="mbtn" id="menuBtn">МЕНЮ</button></div>`);
+}
+
+function gameOver(){
+  if(score>hi)hi=score;hideMissionBanner();
+  const vac=gameMode==='solo'?`<p style="color:#aaa;font-size:12px">Вакцинировано: ${planets.filter(p=>p.vaccinated).length} / 7</p>`:'';
+  showOverlay(`<h1>GAME OVER</h1><p style="color:#f44;font-size:17px;margin-top:10px">Счёт: ${score}</p>${vac}<div class="hi">Рекорд: ${hi}</div><div class="mode-btns"><button class="mbtn" id="startBtn">ИГРАТЬ СНОВА</button><button class="mbtn" id="menuBtn">МЕНЮ</button></div>`);
+}
+</script>
