@@ -411,6 +411,23 @@ function update(){
 
   updateUI();
 }
+  window.addEventListener("gamepadconnected", (e) => {
+    gamepadIndex = e.gamepad.index;
+});
+
+function monitorMenuGamepad() {
+    if (state === 'menu') {
+        const pads = navigator.getGamepads();
+        const gp = gamepadIndex !== null ? pads[gamepadIndex] : null;
+        if (gp) {
+            if (gp.buttons[0].pressed) document.getElementById('btn-solo').click();
+            if (gp.buttons[1].pressed) document.getElementById('btn-team').click();
+        }
+    }
+    requestAnimationFrame(monitorMenuGamepad);
+}
+monitorMenuGamepad();
+
 
 function explode(x,y,size,color){
   for(let i=0;i<size*7;i++){
